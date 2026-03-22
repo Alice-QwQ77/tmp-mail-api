@@ -1,73 +1,92 @@
-// edgeone-src/index.ts
-var APP_NAME = "Temporary Mail API";
-var KV_BINDING_NAME = "TMPMAIL_KV";
-var ACCOUNT_TTL_MS = 24 * 60 * 60 * 1e3;
-var TOKEN_REFRESH_INTERVAL_MS = 10 * 60 * 1e3;
-var MAIL_MAP_TTL_MS = 24 * 60 * 60 * 1e3;
-var SESSION_TTL_SEC = 24 * 60 * 60;
-var textEncoder = new TextEncoder();
-var textDecoder = new TextDecoder();
-var HMAC_KEY_CACHE = /* @__PURE__ */ new Map();
-var HttpError = class extends Error {
+const APP_NAME = "Temporary Mail API";
+const KV_BINDING_NAME = "TMPMAIL_KV";
+const ACCOUNT_TTL_MS = 24 * 60 * 60 * 1000;
+const TOKEN_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+const MAIL_MAP_TTL_MS = 24 * 60 * 60 * 1000;
+const SESSION_TTL_SEC = 24 * 60 * 60;
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+const HMAC_KEY_CACHE = new Map();
+
+class HttpError extends Error {
   constructor(status, message) {
     super(message);
     this.status = status;
   }
-};
+}
+
 function getKv() {
   if (typeof TMPMAIL_KV === "undefined") {
     throw new Error(`Missing EdgeOne KV binding: ${KV_BINDING_NAME}`);
   }
   return TMPMAIL_KV;
 }
+
 function env(context, key, fallback = "") {
   const value = context.env && context.env[key];
-  return value === void 0 || value === null || value === "" ? fallback : String(value);
+  return value === undefined || value === null || value === ""
+    ? fallback
+    : String(value);
 }
+
 function envPositiveInt(context, key, fallback) {
   const value = Number(env(context, key, String(fallback)));
   return Number.isInteger(value) && value > 0 ? value : fallback;
 }
+
 function envNonNegativeInt(context, key, fallback) {
   const value = Number(env(context, key, String(fallback)));
   return Number.isInteger(value) && value >= 0 ? value : fallback;
 }
+
 function jsonResponse(status, data, error = "", headers) {
   const finalHeaders = new Headers(headers);
   finalHeaders.set("content-type", "application/json; charset=utf-8");
   return new Response(JSON.stringify({ success: status < 400, data, error }), {
     status,
-    headers: finalHeaders
+    headers: finalHeaders,
   });
 }
+
 function htmlResponse(status, html, headers) {
   const finalHeaders = new Headers(headers);
   finalHeaders.set("content-type", "text/html; charset=utf-8");
   return new Response(html, { status, headers: finalHeaders });
 }
+
 function redirectResponse(location, status = 302, headers) {
   const finalHeaders = new Headers(headers);
   finalHeaders.set("location", location);
   return new Response(null, { status, headers: finalHeaders });
 }
+
 function escapeHtml(value) {
-  return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
+
 function randomHex(bytes) {
   const raw = new Uint8Array(bytes);
   crypto.getRandomValues(raw);
   return Array.from(raw, (value) => value.toString(16).padStart(2, "0")).join("");
 }
+
 function bytesToBase64Url(bytes) {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/g, "");
 }
+
 function base64UrlToBytes(value) {
   const padded = value.replaceAll("-", "+").replaceAll("_", "/") + "===".slice((value.length + 3) % 4);
   const binary = atob(padded);
   return Uint8Array.from(binary, (char) => char.charCodeAt(0));
 }
+
 function timingSafeEqual(a, b) {
   const left = textEncoder.encode(a);
   const right = textEncoder.encode(b);
@@ -78,25 +97,29 @@ function timingSafeEqual(a, b) {
   }
   return diff === 0;
 }
+
 async function sha256Hex(value) {
   const digest = await crypto.subtle.digest("SHA-256", textEncoder.encode(value));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
+
 async function getHmacKey(secret) {
   if (!HMAC_KEY_CACHE.has(secret)) {
     HMAC_KEY_CACHE.set(
       secret,
-      crypto.subtle.importKey("raw", textEncoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
+      crypto.subtle.importKey("raw", textEncoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]),
     );
   }
   return await HMAC_KEY_CACHE.get(secret);
 }
+
 async function signAdminSession(secret, payload) {
   const payloadB64 = bytesToBase64Url(textEncoder.encode(JSON.stringify(payload)));
   const key = await getHmacKey(secret);
   const signature = new Uint8Array(await crypto.subtle.sign("HMAC", key, textEncoder.encode(payloadB64)));
   return `${payloadB64}.${bytesToBase64Url(signature)}`;
 }
+
 async function verifyAdminSession(secret, token) {
   if (!token) return null;
   const [payloadB64, signatureB64] = token.split(".");
@@ -106,11 +129,14 @@ async function verifyAdminSession(secret, token) {
   if (!timingSafeEqual(bytesToBase64Url(signature), signatureB64)) return null;
   try {
     const payload = JSON.parse(textDecoder.decode(base64UrlToBytes(payloadB64)));
-    return payload && typeof payload.exp === "number" && payload.exp > Math.floor(Date.now() / 1e3) ? payload : null;
+    return payload && typeof payload.exp === "number" && payload.exp > Math.floor(Date.now() / 1000)
+      ? payload
+      : null;
   } catch {
     return null;
   }
 }
+
 function parseCookies(rawCookie) {
   const result = {};
   if (!rawCookie) return result;
@@ -121,6 +147,7 @@ function parseCookies(rawCookie) {
   }
   return result;
 }
+
 function buildCookie(name, value, options = {}) {
   const parts = [`${name}=${value}`, `Path=${options.path ?? "/"}`];
   if (options.httpOnly !== false) parts.push("HttpOnly");
@@ -130,6 +157,7 @@ function buildCookie(name, value, options = {}) {
   if (options.expires instanceof Date) parts.push(`Expires=${options.expires.toUTCString()}`);
   return parts.join("; ");
 }
+
 function clearCookie(name, secure) {
   return buildCookie(name, "", {
     path: "/",
@@ -137,52 +165,67 @@ function clearCookie(name, secure) {
     sameSite: "Strict",
     secure,
     maxAge: 0,
-    expires: /* @__PURE__ */ new Date(0)
+    expires: new Date(0),
   });
 }
+
 function keyForApiKey(id) {
   return `api_key:${id}`;
 }
+
 function keyForApiKeyHash(hash) {
   return `api_key_hash:${hash}`;
 }
+
 function keyForAccount(provider, email) {
   return `provider_account:${provider}:${email}`;
 }
+
 function keyForSessionOwner(email) {
   return `session_owner:${email}`;
 }
+
 function keyForMailMap(mailId) {
   return `mail_map:${mailId}`;
 }
+
 function keyForLinshiMailMeta(email, mailId) {
   return `linshi_mail_meta:${email}:${mailId}`;
 }
+
 function keyForMetric(name) {
   return `metric:${name}`;
 }
+
 function keyForMetricDay(name, yyyymmdd) {
   return `metric_day:${name}:${yyyymmdd}`;
 }
+
 function keyForProviderConfig(name) {
   return `provider_config:${name}`;
 }
+
 function keyForConfig(name) {
   return `config:${name}`;
 }
+
 async function kvPutJson(kv, key, value) {
   await kv.put(key, JSON.stringify(value));
 }
+
 async function kvGetJson(kv, key) {
   return await kv.get(key, "json");
 }
+
 async function kvGetText(kv, key) {
   const value = await kv.get(key);
   return value == null ? null : String(value);
 }
+
 async function kvDelete(kv, key) {
   await kv.delete(key);
 }
+
 async function kvListKeys(kv, prefix) {
   const keys = [];
   let cursor;
@@ -196,23 +239,28 @@ async function kvListKeys(kv, prefix) {
   } while (true);
   return keys;
 }
+
 function utcDayStamp(timestampMs = Date.now()) {
   return new Date(timestampMs).toISOString().slice(0, 10).replaceAll("-", "");
 }
+
 async function getNumberMetric(kv, key) {
   const raw = await kvGetText(kv, key);
   const parsed = raw == null ? 0 : Number(raw);
   return Number.isFinite(parsed) ? parsed : 0;
 }
+
 async function incrementMetric(kv, key, delta) {
   const current = await getNumberMetric(kv, key);
   await kv.put(key, String(current + delta));
 }
+
 async function persistUpstreamMetrics(kv, upstreamCalls) {
   if (!upstreamCalls) return;
   await incrementMetric(kv, keyForMetric("upstream_calls_total"), upstreamCalls);
   await incrementMetric(kv, keyForMetricDay("upstream_calls", utcDayStamp()), upstreamCalls);
 }
+
 function parseProviderList(context) {
   const raw = env(context, "ENABLED_PROVIDERS", "mailtm,mailgw");
   const names = Array.from(new Set(raw.split(",").map((value) => value.trim().toLowerCase()).filter(Boolean)));
@@ -228,7 +276,7 @@ function parseProviderList(context) {
           return String(from.address ?? from.name ?? "");
         }
         return typeof from === "string" ? from : "";
-      }
+      },
     };
   }
   if (names.includes("mailgw")) {
@@ -241,7 +289,7 @@ function parseProviderList(context) {
         if (Array.isArray(from)) return from.length ? String(from[0]) : "";
         if (from && typeof from === "object") return String(from.address ?? from.name ?? "");
         return typeof from === "string" ? from : "";
-      }
+      },
     };
   }
   if (names.includes("linshiyouxiang")) {
@@ -249,12 +297,13 @@ function parseProviderList(context) {
       name: "linshiyouxiang",
       title: "linshiyouxiang",
       baseUrl: env(context, "PROVIDER_LINSHI_BASE", "https://www.linshiyouxiang.net").replace(/\/$/, ""),
-      sessionTtlMs: envPositiveInt(context, "LINSHI_SESSION_TTL_MS", 3e6),
-      maxDetailFetch: envNonNegativeInt(context, "LINSHI_MAX_DETAIL_FETCH", 0)
+      sessionTtlMs: envPositiveInt(context, "LINSHI_SESSION_TTL_MS", 3_000_000),
+      maxDetailFetch: envNonNegativeInt(context, "LINSHI_MAX_DETAIL_FETCH", 0),
     };
   }
   return providers;
 }
+
 function normalizeProviderName(value) {
   const normalized = String(value ?? "").trim().toLowerCase();
   if (!/^[a-z0-9_-]+$/.test(normalized)) {
@@ -262,6 +311,7 @@ function normalizeProviderName(value) {
   }
   return normalized;
 }
+
 function normalizeProviderUrl(value) {
   const url = String(value ?? "").trim();
   if (!/^https?:\/\//i.test(url)) {
@@ -269,15 +319,18 @@ function normalizeProviderUrl(value) {
   }
   return url.replace(/\/+$/, "");
 }
+
 function parseConfigBoolean(value) {
   return ["1", "true", "yes", "on", "disabled"].includes(String(value ?? "").trim().toLowerCase());
 }
+
 function providerDisabledConfigKey(name) {
   return `PROVIDER_DISABLED_${String(name).trim().toUpperCase()}`;
 }
+
 async function getResolvedConfigValue(kv, context, name, fallback = "") {
   const fromEnv = context.env && context.env[name];
-  if (fromEnv !== void 0 && fromEnv !== null && String(fromEnv) !== "") {
+  if (fromEnv !== undefined && fromEnv !== null && String(fromEnv) !== "") {
     return { key: name, value: String(fromEnv), source: "env", locked: true };
   }
   const fromKv = await getConfigValue(kv, name);
@@ -286,14 +339,21 @@ async function getResolvedConfigValue(kv, context, name, fallback = "") {
   }
   return { key: name, value: fallback, source: "fallback", locked: false };
 }
+
 async function resolveProviderSecret(kv, context) {
   return await getResolvedConfigValue(kv, context, "PROVIDER_SECRET", "");
 }
+
+async function resolveDefaultProviderConfig(kv, context) {
+  return await getResolvedConfigValue(kv, context, "DEFAULT_PROVIDER", "mailtm");
+}
+
 async function listDynamicProviders(kv) {
   const keys = await kvListKeys(kv, "provider_config:");
   const records = await Promise.all(keys.map((key) => kvGetJson(kv, key)));
   return records.filter(Boolean).sort((a, b) => String(a.name).localeCompare(String(b.name)));
 }
+
 async function assembleAllProviders(context, kv) {
   const providers = parseProviderList(context);
   const kvDynamicProviders = await listDynamicProviders(kv);
@@ -305,7 +365,7 @@ async function assembleAllProviders(context, kv) {
         title: provider.name,
         kind: "remote",
         url: provider.url,
-        source: "kv"
+        source: "kv",
       };
     }
   }
@@ -315,13 +375,13 @@ async function assembleAllProviders(context, kv) {
       kv,
       context,
       providerDisabledConfigKey(provider.name),
-      ""
+      "",
     );
     rows.push({
       ...provider,
       disabled: parseConfigBoolean(disabledResolved.value),
       disabledSource: disabledResolved.source,
-      disableLocked: disabledResolved.locked
+      disableLocked: disabledResolved.locked,
     });
   }
   return rows.reduce((acc, row) => {
@@ -329,6 +389,7 @@ async function assembleAllProviders(context, kv) {
     return acc;
   }, {});
 }
+
 async function assembleProviders(context, kv) {
   const rows = Object.values(await assembleAllProviders(context, kv));
   return rows.reduce((acc, row) => {
@@ -336,15 +397,19 @@ async function assembleProviders(context, kv) {
     return acc;
   }, {});
 }
+
 async function getConfigValue(kv, name) {
   return await kvGetText(kv, keyForConfig(name));
 }
+
 async function setConfigValue(kv, name, value) {
   await kv.put(keyForConfig(name), value);
 }
+
 async function deleteConfigValue(kv, name) {
   await kvDelete(kv, keyForConfig(name));
 }
+
 async function getDefaultProviderName(kv, context, providers) {
   const fromKv = (await getConfigValue(kv, "DEFAULT_PROVIDER") || "").trim().toLowerCase();
   if (fromKv && providers[fromKv]) return fromKv;
@@ -352,33 +417,39 @@ async function getDefaultProviderName(kv, context, providers) {
   if (configured && providers[configured]) return configured;
   return Object.keys(providers)[0] || "";
 }
+
 async function listProviderEntries(kv, context, providers) {
   const allProviders = await assembleAllProviders(context, kv);
   const defaultProvider = await getDefaultProviderName(kv, context, allProviders);
   const entries = Object.values(allProviders).map((provider) => ({
     name: provider.name,
     type: provider.kind === "remote" ? "remote" : "builtin",
-    target: provider.kind === "remote" ? provider.url : provider.baseUrl || "",
+    target: provider.kind === "remote" ? provider.url : (provider.baseUrl || ""),
     isDefault: provider.name === defaultProvider,
     disabled: Boolean(provider.disabled),
     disabledSource: provider.disabledSource || "fallback",
     disableLocked: Boolean(provider.disableLocked),
-    source: provider.source || (provider.kind === "remote" ? "kv" : "env")
+    source: provider.source || (provider.kind === "remote" ? "kv" : "env"),
   }));
-  return entries.map((provider) => ({
-    ...provider
-  })).sort((a, b) => a.name.localeCompare(b.name));
+  return entries
+    .map((provider) => ({
+      ...provider,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
+
 async function countedFetch(state, url, init) {
   const response = await fetch(url, init);
   state.upstreamCalls += 1;
   return response;
 }
+
 function parseHydraMembers(raw) {
   if (Array.isArray(raw)) return raw;
   if (raw && typeof raw === "object" && Array.isArray(raw["hydra:member"])) return raw["hydra:member"];
   return [];
 }
+
 async function loadAccount(kv, provider, email) {
   const record = await kvGetJson(kv, keyForAccount(provider, email));
   if (!record) return null;
@@ -388,18 +459,21 @@ async function loadAccount(kv, provider, email) {
   }
   return record;
 }
+
 async function saveAccount(kv, provider, account, ttlMs) {
   await kvPutJson(kv, keyForAccount(provider, account.address), {
     ...account,
-    expiresAt: Date.now() + ttlMs
+    expiresAt: Date.now() + ttlMs,
   });
 }
+
 async function saveSessionOwner(kv, email, provider) {
   await kvPutJson(kv, keyForSessionOwner(email), {
     provider,
-    expiresAt: Date.now() + ACCOUNT_TTL_MS
+    expiresAt: Date.now() + ACCOUNT_TTL_MS,
   });
 }
+
 async function loadSessionOwner(kv, email) {
   const record = await kvGetJson(kv, keyForSessionOwner(email));
   if (!record) return null;
@@ -409,13 +483,15 @@ async function loadSessionOwner(kv, email) {
   }
   return typeof record.provider === "string" ? record.provider : null;
 }
+
 async function saveMailMap(kv, mailId, email, provider) {
   await kvPutJson(kv, keyForMailMap(mailId), {
     email,
     provider,
-    expiresAt: Date.now() + MAIL_MAP_TTL_MS
+    expiresAt: Date.now() + MAIL_MAP_TTL_MS,
   });
 }
+
 async function loadMailMap(kv, mailId) {
   const record = await kvGetJson(kv, keyForMailMap(mailId));
   if (!record) return null;
@@ -425,11 +501,13 @@ async function loadMailMap(kv, mailId) {
   }
   return typeof record.email === "string" && typeof record.provider === "string" ? record : null;
 }
+
 async function listApiKeys(kv) {
   const keys = await kvListKeys(kv, "api_key:");
   const records = await Promise.all(keys.map((key) => kvGetJson(kv, key)));
   return records.filter(Boolean).sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
 }
+
 async function createApiKey(kv, label) {
   const rawKey = `sk-${randomHex(16)}`;
   const id = `${Date.now().toString(36)}-${randomHex(4)}`;
@@ -440,19 +518,22 @@ async function createApiKey(kv, label) {
   await kv.put(keyForApiKeyHash(keyHash), id);
   return { record, rawKey };
 }
+
 async function updateApiKeyStatus(kv, id, status) {
   const record = await kvGetJson(kv, keyForApiKey(id));
-  if (!record) throw new HttpError(404, "API Key ï¿½ï¿½ï¿½ï¿½ï¿½Ú¡ï¿½");
+  if (!record) throw new HttpError(404, "API Key ²»´æÔÚ¡£");
   record.status = status;
   record.updatedAt = Date.now();
   await kvPutJson(kv, keyForApiKey(id), record);
 }
+
 async function deleteApiKey(kv, id) {
   const record = await kvGetJson(kv, keyForApiKey(id));
-  if (!record) throw new HttpError(404, "API Key ï¿½ï¿½ï¿½ï¿½ï¿½Ú¡ï¿½");
+  if (!record) throw new HttpError(404, "API Key ²»´æÔÚ¡£");
   await kvDelete(kv, keyForApiKey(id));
   if (record.keyHash) await kvDelete(kv, keyForApiKeyHash(record.keyHash));
 }
+
 async function authenticateApiRequest(kv, request) {
   const authorization = request.headers.get("authorization") ?? "";
   const match = authorization.match(/^Bearer\s+(.+)$/i);
@@ -466,52 +547,61 @@ async function authenticateApiRequest(kv, request) {
   if (record.status !== "active") throw new HttpError(403, "API key is disabled.");
   return record;
 }
+
 function randomMailboxPrefix(length = 8) {
   return randomHex(Math.ceil(length / 2)).slice(0, length);
 }
+
 function randomMailboxPassword(length = 16) {
   return randomHex(Math.ceil(length / 2)).slice(0, length);
 }
+
 async function fetchHydraDomains(state, provider) {
   const response = await countedFetch(state, `${provider.baseUrl}/domains`, {
     method: "GET",
-    headers: { accept: "application/json" }
+    headers: { accept: "application/json" },
   });
-  if (!response.ok) throw new HttpError(502, `ï¿½Þ·ï¿½ï¿½ï¿½È¡ ${provider.title} ï¿½ï¿½ï¿½ï¿½ï¿½Ð±ï¿½ï¿½ï¿½`);
+  if (!response.ok) throw new HttpError(502, `ÎÞ·¨¶ÁÈ¡ ${provider.title} ÓòÃûÁÐ±í¡£`);
   const raw = await response.json();
-  const domains = parseHydraMembers(raw).filter((item) => item && item.isActive !== false && item.domain).map((item) => String(item.domain));
-  if (!domains.length) throw new HttpError(502, `${provider.title} ï¿½ï¿½Ç°Ã»ï¿½Ð¿ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½`);
+  const domains = parseHydraMembers(raw)
+    .filter((item) => item && item.isActive !== false && item.domain)
+    .map((item) => String(item.domain));
+  if (!domains.length) throw new HttpError(502, `${provider.title} µ±Ç°Ã»ÓÐ¿ÉÓÃÓòÃû¡£`);
   return domains;
 }
+
 async function createHydraAccount(state, provider, address, password) {
   const response = await countedFetch(state, `${provider.baseUrl}/accounts`, {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify({ address, password })
+    body: JSON.stringify({ address, password }),
   });
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
-    throw new HttpError(502, `${provider.title} ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê§ï¿½ï¿½: ${response.status} ${detail}`.trim());
+    throw new HttpError(502, `${provider.title} ´´½¨ÓÊÏäÊ§°Ü: ${response.status} ${detail}`.trim());
   }
   const json = await response.json();
   return { id: String(json.id), address: String(json.address) };
 }
+
 async function fetchHydraToken(state, provider, address, password) {
   const response = await countedFetch(state, `${provider.baseUrl}/token`, {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify({ address, password })
+    body: JSON.stringify({ address, password }),
   });
-  if (!response.ok) throw new HttpError(502, `${provider.title} ï¿½ï¿½È¡ Token Ê§ï¿½Ü¡ï¿½`);
+  if (!response.ok) throw new HttpError(502, `${provider.title} »ñÈ¡ Token Ê§°Ü¡£`);
   const json = await response.json();
   if (!json || typeof json.token !== "string" || !json.token) {
-    throw new HttpError(502, `${provider.title} ï¿½ï¿½ï¿½ï¿½ï¿½Ë¿ï¿½ Tokenï¿½ï¿½`);
+    throw new HttpError(502, `${provider.title} ·µ»ØÁË¿Õ Token¡£`);
   }
   return json.token;
 }
+
 function hydraAuthHeaders(token) {
   return { accept: "application/json", authorization: `Bearer ${token}` };
 }
+
 async function getValidHydraToken(kv, state, provider, account) {
   if (Date.now() - Number(account.tokenIssuedAt || 0) < TOKEN_REFRESH_INTERVAL_MS) return account.token;
   const token = await fetchHydraToken(state, provider, account.address, account.password);
@@ -521,6 +611,7 @@ async function getValidHydraToken(kv, state, provider, account) {
   await saveAccount(kv, provider.name, account, ACCOUNT_TTL_MS);
   return token;
 }
+
 function mapHydraMessage(provider, message, email) {
   return {
     id: String(message.id),
@@ -528,15 +619,20 @@ function mapHydraMessage(provider, message, email) {
     from_address: provider.fromExtractor(message),
     subject: String(message.subject ?? ""),
     content: String(message.text ?? ""),
-    html_content: Array.isArray(message.html) ? message.html.join("") : String(message.html ?? "")
+    html_content: Array.isArray(message.html) ? message.html.join("") : String(message.html ?? ""),
   };
 }
+
 async function hydraGenerateEmail(kv, state, provider, payload) {
   const domains = await fetchHydraDomains(state, provider);
-  const prefix = typeof payload.prefix === "string" && payload.prefix.trim() ? payload.prefix.trim() : randomMailboxPrefix();
-  const domain = typeof payload.domain === "string" && payload.domain.trim() ? payload.domain.trim() : domains[Math.floor(Math.random() * domains.length)];
+  const prefix = typeof payload.prefix === "string" && payload.prefix.trim()
+    ? payload.prefix.trim()
+    : randomMailboxPrefix();
+  const domain = typeof payload.domain === "string" && payload.domain.trim()
+    ? payload.domain.trim()
+    : domains[Math.floor(Math.random() * domains.length)];
   if (!domains.includes(domain)) {
-    throw new HttpError(400, `Provider ${provider.name} ï¿½ï¿½Ö§ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ${domain}ï¿½ï¿½`);
+    throw new HttpError(400, `Provider ${provider.name} ²»Ö§³ÖÓòÃû ${domain}¡£`);
   }
   const address = `${prefix}@${domain}`;
   const password = randomMailboxPassword();
@@ -549,20 +645,22 @@ async function hydraGenerateEmail(kv, state, provider, payload) {
     token,
     tokenIssuedAt: Date.now(),
     createdAt: Date.now(),
-    updatedAt: Date.now()
+    updatedAt: Date.now(),
   };
   await saveAccount(kv, provider.name, account, ACCOUNT_TTL_MS);
   await saveSessionOwner(kv, address, provider.name);
   return { email: address, provider: provider.name };
 }
+
 async function hydraListEmails(kv, state, provider, email) {
   const account = await loadAccount(kv, provider.name, email);
-  if (!account) throw new HttpError(404, `ï¿½ï¿½ï¿½ï¿½ ${email} ï¿½ï¿½ provider ${provider.name} ï¿½ï¿½Ã»ï¿½ï¿½ï¿½ï¿½Ð§ï¿½á»°ï¿½ï¿½`);
+  if (!account) throw new HttpError(404, `ÓÊÏä ${email} ÔÚ provider ${provider.name} ÉÏÃ»ÓÐÓÐÐ§»á»°¡£`);
   const token = await getValidHydraToken(kv, state, provider, account);
-  const requestOnce = async (authToken) => countedFetch(state, `${provider.baseUrl}/messages?page=1`, {
-    method: "GET",
-    headers: hydraAuthHeaders(authToken)
-  });
+  const requestOnce = async (authToken) =>
+    countedFetch(state, `${provider.baseUrl}/messages?page=1`, {
+      method: "GET",
+      headers: hydraAuthHeaders(authToken),
+    });
   let response = await requestOnce(token);
   if (response.status === 401) {
     const freshToken = await fetchHydraToken(state, provider, account.address, account.password);
@@ -572,40 +670,43 @@ async function hydraListEmails(kv, state, provider, email) {
     await saveAccount(kv, provider.name, account, ACCOUNT_TTL_MS);
     response = await requestOnce(freshToken);
   }
-  if (!response.ok) throw new HttpError(502, `ï¿½ï¿½È¡ ${provider.title} ï¿½Ê¼ï¿½ï¿½Ð±ï¿½Ê§ï¿½Ü¡ï¿½`);
+  if (!response.ok) throw new HttpError(502, `¶ÁÈ¡ ${provider.title} ÓÊ¼þÁÐ±íÊ§°Ü¡£`);
   const raw = await response.json();
   const emails = parseHydraMembers(raw).map((message) => mapHydraMessage(provider, message, email));
   await Promise.all(emails.map((message) => saveMailMap(kv, message.id, email, provider.name)));
   return { emails, count: emails.length, provider: provider.name };
 }
+
 async function hydraGetEmail(kv, state, provider, email, mailId) {
   const account = await loadAccount(kv, provider.name, email);
-  if (!account) throw new HttpError(404, `ï¿½ï¿½ï¿½ï¿½ ${email} ï¿½ï¿½ provider ${provider.name} ï¿½ï¿½Ã»ï¿½ï¿½ï¿½ï¿½Ð§ï¿½á»°ï¿½ï¿½`);
+  if (!account) throw new HttpError(404, `ÓÊÏä ${email} ÔÚ provider ${provider.name} ÉÏÃ»ÓÐÓÐÐ§»á»°¡£`);
   const token = await getValidHydraToken(kv, state, provider, account);
   const response = await countedFetch(state, `${provider.baseUrl}/messages/${encodeURIComponent(mailId)}`, {
     method: "GET",
-    headers: hydraAuthHeaders(token)
+    headers: hydraAuthHeaders(token),
   });
-  if (!response.ok) throw new HttpError(response.status === 404 ? 404 : 502, `ï¿½ï¿½È¡ï¿½Ê¼ï¿½ ${mailId} Ê§ï¿½Ü¡ï¿½`);
+  if (!response.ok) throw new HttpError(response.status === 404 ? 404 : 502, `¶ÁÈ¡ÓÊ¼þ ${mailId} Ê§°Ü¡£`);
   const raw = await response.json();
   const record = mapHydraMessage(provider, raw, email);
   await saveMailMap(kv, record.id, email, provider.name);
   return record;
 }
+
 async function hydraDeleteEmail(kv, state, provider, email, mailId) {
   const account = await loadAccount(kv, provider.name, email);
-  if (!account) throw new HttpError(404, `ï¿½ï¿½ï¿½ï¿½ ${email} ï¿½ï¿½ provider ${provider.name} ï¿½ï¿½Ã»ï¿½ï¿½ï¿½ï¿½Ð§ï¿½á»°ï¿½ï¿½`);
+  if (!account) throw new HttpError(404, `ÓÊÏä ${email} ÔÚ provider ${provider.name} ÉÏÃ»ÓÐÓÐÐ§»á»°¡£`);
   const token = await getValidHydraToken(kv, state, provider, account);
   const response = await countedFetch(state, `${provider.baseUrl}/messages/${encodeURIComponent(mailId)}`, {
     method: "DELETE",
-    headers: hydraAuthHeaders(token)
+    headers: hydraAuthHeaders(token),
   });
   if (!response.ok && response.status !== 204) {
-    throw new HttpError(response.status === 404 ? 404 : 502, `É¾ï¿½ï¿½ï¿½Ê¼ï¿½ ${mailId} Ê§ï¿½Ü¡ï¿½`);
+    throw new HttpError(response.status === 404 ? 404 : 502, `É¾³ýÓÊ¼þ ${mailId} Ê§°Ü¡£`);
   }
   await kvDelete(kv, keyForMailMap(mailId));
   return { message: "Deleted email.", provider: provider.name };
 }
+
 async function hydraClearEmails(kv, state, provider, email) {
   const list = await hydraListEmails(kv, state, provider, email);
   let deleted = 0;
@@ -615,6 +716,7 @@ async function hydraClearEmails(kv, state, provider, email) {
   }
   return { message: "Cleared emails.", count: deleted, provider: provider.name };
 }
+
 function mergeSetCookies(existing, headers) {
   const merged = { ...existing };
   let rawCookies = [];
@@ -639,31 +741,37 @@ function mergeSetCookies(existing, headers) {
   }
   return merged;
 }
+
 function serializeCookies(cookies) {
   return Object.entries(cookies).map(([key, value]) => `${key}=${value}`).join("; ");
 }
+
 function linshiBuildHeaders(provider, cookies, extra = {}) {
   const headers = new Headers({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
     accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.7",
     origin: provider.baseUrl,
-    referer: `${provider.baseUrl}/`
+    referer: `${provider.baseUrl}/`,
   });
   for (const [key, value] of new Headers(extra).entries()) headers.set(key, value);
   if (Object.keys(cookies).length) headers.set("cookie", serializeCookies(cookies));
   return headers;
 }
+
 async function loadLinshiMailMeta(kv, email, mailId) {
   return await kvGetJson(kv, keyForLinshiMailMeta(email, mailId));
 }
+
 async function saveLinshiMailMeta(kv, email, mailId, value) {
   await kvPutJson(kv, keyForLinshiMailMeta(email, mailId), value);
 }
+
 async function linshiFetchHome(state, provider, cookies) {
   const response = await countedFetch(state, `${provider.baseUrl}/`, {
     method: "GET",
-    headers: linshiBuildHeaders(provider, cookies)
+    headers: linshiBuildHeaders(provider, cookies),
   });
   const html = await response.text();
   const mergedCookies = mergeSetCookies(cookies, response.headers);
@@ -673,10 +781,12 @@ async function linshiFetchHome(state, provider, cookies) {
   }
   return { html, cookies: mergedCookies, mailCode: match[1] };
 }
+
 async function linshiInitSession(state, provider) {
   const result = await linshiFetchHome(state, provider, {});
   return { cookies: result.cookies, mailCode: result.mailCode };
 }
+
 async function linshiGetGmail(state, provider, cookies) {
   const template = Math.random() < 0.5 ? "a.b.c@gmail.com" : "abc+hello@gmail.com";
   const response = await countedFetch(state, `${provider.baseUrl}/change-to-gmail`, {
@@ -684,9 +794,9 @@ async function linshiGetGmail(state, provider, cookies) {
     headers: linshiBuildHeaders(provider, cookies, {
       "content-type": "application/json",
       accept: "application/json, text/plain, */*",
-      "X-Requested-With": "XMLHttpRequest"
+      "X-Requested-With": "XMLHttpRequest",
     }),
-    body: JSON.stringify({ type: "gmail_alias", template })
+    body: JSON.stringify({ type: "gmail_alias", template }),
   });
   let json;
   try {
@@ -700,6 +810,7 @@ async function linshiGetGmail(state, provider, cookies) {
   }
   return { email, cookies: mergeSetCookies(cookies, response.headers) };
 }
+
 async function linshiRefreshMessages(state, provider, session) {
   let nextSession = { ...session };
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -708,9 +819,9 @@ async function linshiRefreshMessages(state, provider, session) {
       headers: linshiBuildHeaders(provider, nextSession.cookies, {
         "content-type": "application/json",
         accept: "application/json, text/plain, */*",
-        "X-Requested-With": "XMLHttpRequest"
+        "X-Requested-With": "XMLHttpRequest",
       }),
-      body: JSON.stringify({ email: nextSession.email, code: nextSession.mailCode })
+      body: JSON.stringify({ email: nextSession.email, code: nextSession.mailCode }),
     });
     let json = null;
     try {
@@ -728,17 +839,36 @@ async function linshiRefreshMessages(state, provider, session) {
   }
   throw new HttpError(502, "Failed to refresh linshiyouxiang inbox.");
 }
+
 function decodeHtmlEntities(value) {
-  return String(value ?? "").replaceAll("&nbsp;", " ").replaceAll("&amp;", "&").replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&#39;", "'");
+  return String(value ?? "")
+    .replaceAll("&nbsp;", " ")
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#39;", "'");
 }
+
 function stripTags(html) {
   return decodeHtmlEntities(
-    String(html ?? "").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<br\s*\/?>/gi, "\n").replace(/<\/p>/gi, "\n").replace(/<[^>]+>/g, " ").replace(/\s+\n/g, "\n").replace(/\n\s+/g, "\n").replace(/[ \t]{2,}/g, " ").trim()
+    String(html ?? "")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/p>/gi, "\n")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+\n/g, "\n")
+      .replace(/\n\s+/g, "\n")
+      .replace(/[ \t]{2,}/g, " ")
+      .trim(),
   );
 }
+
 function stripHtmlFragmentTags(html) {
   return stripTags(String(html ?? "").replace(/<[^>]+>/g, " ").trim());
 }
+
 function linshiParseMailList(html) {
   const tbodyMatch = html.match(/<tbody[^>]*id=["']message-list["'][^>]*>([\s\S]*?)<\/tbody>/i);
   const section = tbodyMatch ? tbodyMatch[1] : html;
@@ -756,18 +886,19 @@ function linshiParseMailList(html) {
       type: hrefMatch[2] || "",
       sender: stripHtmlFragmentTags(cells[0]),
       subject: stripHtmlFragmentTags(cells[1]),
-      timestamp: stripHtmlFragmentTags(timeMatch ? timeMatch[1] : cells[2])
+      timestamp: stripHtmlFragmentTags(timeMatch ? timeMatch[1] : cells[2]),
     });
   }
   return results;
 }
+
 async function linshiGetMailContent(state, provider, session, mailId) {
   const response = await countedFetch(state, `${provider.baseUrl}/mail/gmail-content/${encodeURIComponent(mailId)}`, {
     method: "GET",
     headers: linshiBuildHeaders(provider, session.cookies, {
       accept: "application/json, text/plain, */*",
-      "X-Requested-With": "XMLHttpRequest"
-    })
+      "X-Requested-With": "XMLHttpRequest",
+    }),
   });
   let json;
   try {
@@ -785,13 +916,15 @@ async function linshiGetMailContent(state, provider, session, mailId) {
     session: {
       ...session,
       cookies: mergeSetCookies(session.cookies, response.headers),
-      updatedAt: Date.now()
-    }
+      updatedAt: Date.now(),
+    },
   };
 }
+
 function linshiHtmlToText(html) {
   return stripTags(html);
 }
+
 async function refreshAndCacheLinshiMailList(kv, state, provider, session, email) {
   const refreshedSession = await linshiRefreshMessages(state, provider, session);
   const home = await linshiFetchHome(state, provider, refreshedSession.cookies);
@@ -799,19 +932,21 @@ async function refreshAndCacheLinshiMailList(kv, state, provider, session, email
     ...refreshedSession,
     cookies: home.cookies,
     mailCode: home.mailCode,
-    updatedAt: Date.now()
+    updatedAt: Date.now(),
   };
   const rawList = linshiParseMailList(home.html);
   await Promise.all(
-    rawList.map((item) => saveLinshiMailMeta(kv, email, item.id, {
-      sender: item.sender,
-      subject: item.subject,
-      timestamp: item.timestamp
-    }))
+    rawList.map((item) =>
+      saveLinshiMailMeta(kv, email, item.id, {
+        sender: item.sender,
+        subject: item.subject,
+        timestamp: item.timestamp,
+      })),
   );
   await saveAccount(kv, provider.name, { ...nextSession, address: nextSession.email }, provider.sessionTtlMs);
   return { session: nextSession, rawList };
 }
+
 async function linshiGenerateEmail(kv, state, provider, payload) {
   if (payload.prefix || payload.domain) {
     throw new HttpError(400, "The linshiyouxiang provider does not support prefix or domain options.");
@@ -825,12 +960,13 @@ async function linshiGenerateEmail(kv, state, provider, payload) {
     email: gmail.email,
     address: gmail.email,
     createdAt: Date.now(),
-    updatedAt: Date.now()
+    updatedAt: Date.now(),
   };
   await saveAccount(kv, provider.name, session, provider.sessionTtlMs);
   await saveSessionOwner(kv, gmail.email, provider.name);
   return { email: gmail.email, provider: provider.name };
 }
+
 async function linshiListEmails(kv, state, provider, email) {
   const session = await loadAccount(kv, provider.name, email);
   if (!session) {
@@ -851,7 +987,7 @@ async function linshiListEmails(kv, state, provider, email) {
         from_address: item.sender,
         subject: item.subject,
         content: linshiHtmlToText(detail.html),
-        html_content: detail.html
+        html_content: detail.html,
       });
     } else {
       emails.push({
@@ -860,7 +996,7 @@ async function linshiListEmails(kv, state, provider, email) {
         from_address: item.sender,
         subject: item.subject,
         content: "",
-        html_content: ""
+        html_content: "",
       });
     }
   }
@@ -868,6 +1004,7 @@ async function linshiListEmails(kv, state, provider, email) {
   await Promise.all(emails.map((message) => saveMailMap(kv, message.id, email, provider.name)));
   return { emails, count: rawList.length, provider: provider.name };
 }
+
 async function linshiGetEmail(kv, state, provider, email, mailId) {
   let session = await loadAccount(kv, provider.name, email);
   if (!session) throw new HttpError(404, "No active session for this email.");
@@ -887,25 +1024,28 @@ async function linshiGetEmail(kv, state, provider, email, mailId) {
     from_address: meta && meta.sender ? meta.sender : "",
     subject: meta && meta.subject ? meta.subject : "",
     content: linshiHtmlToText(detail.html),
-    html_content: detail.html
+    html_content: detail.html,
   };
 }
+
 async function linshiDeleteEmail() {
   throw new HttpError(501, "The linshiyouxiang provider does not support single email deletion.");
 }
+
 async function linshiClearEmails() {
   throw new HttpError(501, "The linshiyouxiang provider does not support clearing emails.");
 }
+
 async function callRemoteProvider(state, provider, request, routePath, providerSecret = "") {
   const headers = {
     accept: "application/json",
-    "content-type": request.headers.get("content-type") || "application/json"
+    "content-type": request.headers.get("content-type") || "application/json",
   };
   if (providerSecret) headers.authorization = `Bearer ${providerSecret}`;
   const response = await countedFetch(state, `${provider.url}${routePath}`, {
     method: request.method,
     headers,
-    body: ["GET", "HEAD"].includes(request.method) ? void 0 : await request.text()
+    body: ["GET", "HEAD"].includes(request.method) ? undefined : await request.text(),
   });
   const text = await response.text();
   let payload = null;
@@ -923,15 +1063,16 @@ async function callRemoteProvider(state, provider, request, routePath, providerS
   }
   return payload;
 }
+
 async function remoteGenerateEmail(kv, state, provider, payload, providerSecret = "") {
   const response = await countedFetch(state, `${provider.url}/generate-email`, {
     method: "POST",
     headers: {
       accept: "application/json",
       "content-type": "application/json",
-      ...providerSecret ? { authorization: `Bearer ${providerSecret}` } : {}
+      ...(providerSecret ? { authorization: `Bearer ${providerSecret}` } : {}),
     },
-    body: JSON.stringify(payload || {})
+    body: JSON.stringify(payload || {}),
   });
   const data = await response.json().catch(() => null);
   if (!response.ok || !data || data.success !== true) {
@@ -945,54 +1086,59 @@ async function remoteGenerateEmail(kv, state, provider, payload, providerSecret 
   await saveSessionOwner(kv, email, provider.name);
   return { ...data.data, provider: provider.name };
 }
+
 async function remoteListEmails(kv, state, provider, email, providerSecret = "") {
   const payload = await callRemoteProvider(
     state,
     provider,
     new Request("http://local", { method: "GET" }),
     `/emails?email=${encodeURIComponent(email)}`,
-    providerSecret
+    providerSecret,
   );
   const data = payload && payload.data ? payload.data : null;
   const emails = data && Array.isArray(data.emails) ? data.emails : [];
   await Promise.all(emails.map((message) => saveMailMap(kv, message.id, email, provider.name)));
   await saveSessionOwner(kv, email, provider.name);
-  return { ...data || {}, provider: provider.name };
+  return { ...(data || {}), provider: provider.name };
 }
+
 async function remoteGetEmail(kv, state, provider, email, mailId, providerSecret = "") {
   const payload = await callRemoteProvider(
     state,
     provider,
     new Request("http://local", { method: "GET" }),
     `/email/${encodeURIComponent(mailId)}?email=${encodeURIComponent(email)}`,
-    providerSecret
+    providerSecret,
   );
   const data = payload && payload.data ? payload.data : null;
   if (!data) throw new HttpError(502, "Remote provider did not return email detail.");
   await saveMailMap(kv, mailId, email, provider.name);
   return data;
 }
+
 async function remoteDeleteEmail(kv, state, provider, email, mailId, providerSecret = "") {
   const payload = await callRemoteProvider(
     state,
     provider,
     new Request("http://local", { method: "DELETE" }),
     `/email/${encodeURIComponent(mailId)}?email=${encodeURIComponent(email)}`,
-    providerSecret
+    providerSecret,
   );
   await kvDelete(kv, keyForMailMap(mailId));
   return payload && payload.data ? payload.data : { message: "Deleted email." };
 }
+
 async function remoteClearEmails(_kv, state, provider, email, providerSecret = "") {
   const payload = await callRemoteProvider(
     state,
     provider,
     new Request("http://local", { method: "DELETE" }),
     `/emails/clear?email=${encodeURIComponent(email)}`,
-    providerSecret
+    providerSecret,
   );
   return payload && payload.data ? payload.data : { message: "Cleared emails." };
 }
+
 async function testProviderConnection(state, provider, providerSecret = "") {
   try {
     if (provider.kind === "remote") {
@@ -1001,9 +1147,9 @@ async function testProviderConnection(state, provider, providerSecret = "") {
         headers: {
           accept: "application/json",
           "content-type": "application/json",
-          ...providerSecret ? { authorization: `Bearer ${providerSecret}` } : {}
+          ...(providerSecret ? { authorization: `Bearer ${providerSecret}` } : {}),
         },
-        body: "{}"
+        body: "{}",
       });
       const payload = await response.json().catch(() => null);
       if (!response.ok || !payload || payload.success !== true) {
@@ -1012,31 +1158,37 @@ async function testProviderConnection(state, provider, providerSecret = "") {
       return { ok: true, email: payload.data && payload.data.email ? payload.data.email : "", latencyMs: 0 };
     }
     const startedAt = Date.now();
-    const result = provider.name === "linshiyouxiang" ? await linshiGenerateEmail(getKv(), state, provider, {}) : await hydraGenerateEmail(getKv(), state, provider, {});
+    const result = provider.name === "linshiyouxiang"
+      ? await linshiGenerateEmail(getKv(), state, provider, {})
+      : await hydraGenerateEmail(getKv(), state, provider, {});
     return { ok: true, email: result.email || "", latencyMs: Date.now() - startedAt };
   } catch (error) {
     return {
       ok: false,
       status: error instanceof HttpError ? error.status : 500,
-      error: error instanceof Error ? error.message : String(error)
+      error: error instanceof Error ? error.message : String(error),
     };
   }
 }
+
 function assertAdminConfigured(context) {
-  if (!env(context, "ADMIN_PASSWORD")) throw new HttpError(500, "È±ï¿½ï¿½ ADMIN_PASSWORDï¿½ï¿½");
-  if (!env(context, "ADMIN_COOKIE_SECRET")) throw new HttpError(500, "È±ï¿½ï¿½ ADMIN_COOKIE_SECRETï¿½ï¿½");
+  if (!env(context, "ADMIN_PASSWORD")) throw new HttpError(500, "È±ÉÙ ADMIN_PASSWORD¡£");
+  if (!env(context, "ADMIN_COOKIE_SECRET")) throw new HttpError(500, "È±ÉÙ ADMIN_COOKIE_SECRET¡£");
 }
+
 function requireSameOrigin(request, url) {
   const origin = request.headers.get("origin");
   if (origin && origin !== url.origin) throw new HttpError(403, "Invalid origin.");
 }
+
 async function requireAdmin(context, request) {
   assertAdminConfigured(context);
   const cookies = parseCookies(request.headers.get("cookie"));
   const session = await verifyAdminSession(env(context, "ADMIN_COOKIE_SECRET"), cookies.tmpmail_admin);
-  if (!session) throw new HttpError(401, "ï¿½ï¿½ï¿½Èµï¿½Â¼ï¿½ï¿½");
+  if (!session) throw new HttpError(401, "ÇëÏÈµÇÂ¼¡£");
   return session;
 }
+
 async function resolveProviderForMailbox(kv, providers, email, explicitProvider) {
   if (explicitProvider && providers[explicitProvider]) return providers[explicitProvider];
   const owner = await loadSessionOwner(kv, email);
@@ -1047,18 +1199,20 @@ async function resolveProviderForMailbox(kv, providers, email, explicitProvider)
   }
   return null;
 }
+
 async function resolveMailRouteTarget(kv, providers, mailId, email, explicitProvider) {
   if (email) {
-    const provider2 = await resolveProviderForMailbox(kv, providers, email, explicitProvider);
-    if (!provider2) throw new HttpError(404, "ï¿½Ò²ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ó¦ï¿½ï¿½ providerï¿½ï¿½");
-    return { email, provider: provider2 };
+    const provider = await resolveProviderForMailbox(kv, providers, email, explicitProvider);
+    if (!provider) throw new HttpError(404, "ÕÒ²»µ½¸ÃÓÊÏä¶ÔÓ¦µÄ provider¡£");
+    return { email, provider };
   }
   const mapping = await loadMailMap(kv, mailId);
-  if (!mapping) throw new HttpError(404, "È±ï¿½ï¿½ email ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Òµï¿½Ç° mailId Ã»ï¿½Ð»ï¿½ï¿½ï¿½Ó³ï¿½ä¡£");
+  if (!mapping) throw new HttpError(404, "È±ÉÙ email ²ÎÊý£¬ÇÒµ±Ç° mailId Ã»ÓÐ»º´æÓ³Éä¡£");
   const provider = providers[mapping.provider];
-  if (!provider) throw new HttpError(404, "mailId ï¿½ï¿½Ó¦ï¿½ï¿½ provider ï¿½ï¿½ï¿½ï¿½ï¿½Ã¡ï¿½");
+  if (!provider) throw new HttpError(404, "mailId ¶ÔÓ¦µÄ provider ²»¿ÉÓÃ¡£");
   return { email: mapping.email, provider };
 }
+
 function renderLayout({ title, body, nav = "", subtitle = "" }) {
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1186,24 +1340,26 @@ function renderLayout({ title, body, nav = "", subtitle = "" }) {
 <body>
   <main class="shell">
     <section class="hero">
-      <div class="eyebrow">${escapeHtml(subtitle || "EdgeOne ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½")}</div>
+      <div class="eyebrow">${escapeHtml(subtitle || "EdgeOne °æÁÙÊ±ÓÊÏäÍø¹Ø")}</div>
       <h1>${escapeHtml(title)}</h1>
       ${nav ? `<div class="nav">${nav}</div>` : ""}
     </section>
     ${body}
-    <div class="footer">EdgeOne Edge Functions + KV Storage ï¿½æ±¾ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Îªï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½</div>
+    <div class="footer">EdgeOne Edge Functions + KV Storage °æ±¾£¬Èë¿ÚÒÑÊÕÁ²Îªµ¥º¯Êý²¿Êð¡£</div>
   </main>
 </body>
 </html>`;
 }
+
 function formatDateTime(timestamp) {
-  if (!timestamp) return "ï¿½ï¿½";
+  if (!timestamp) return "¡ª";
   try {
     return new Date(timestamp).toLocaleString("zh-CN", { hour12: false });
   } catch {
-    return "ï¿½ï¿½";
+    return "¡ª";
   }
 }
+
 async function buildStats(kv, providers) {
   const keys = await listApiKeys(kv);
   return {
@@ -1211,105 +1367,111 @@ async function buildStats(kv, providers) {
     totalUpstreamCalls: await getNumberMetric(kv, keyForMetric("upstream_calls_total")),
     todayUpstreamCalls: await getNumberMetric(kv, keyForMetricDay("upstream_calls", utcDayStamp())),
     providers: Object.keys(providers),
-    defaultProvider: ""
+    defaultProvider: "",
   };
 }
+
 function renderDocsPage(context, providers, stats) {
   const providerTags = Object.values(providers).map((provider) => `<span class="tag">${escapeHtml(provider.name)}</span>`).join("");
   const defaultProvider = stats.defaultProvider || "";
   const body = `
     <section class="grid">
-      <div class="card span-4"><div class="metric"><span class="muted">ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ Provider</span><strong>${Object.keys(providers).length}</strong><span class="subtle">Ä¬ï¿½ï¿½Öµï¿½ï¿½${escapeHtml(defaultProvider || "Î´ï¿½ï¿½ï¿½ï¿½")}</span></div></div>
-      <div class="card span-4"><div class="metric"><span class="muted">ï¿½ï¿½Ô¾ API Keys</span><strong>${stats.activeApiKeys}</strong><span class="subtle">Í¨ï¿½ï¿½ï¿½ï¿½Ì¨ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½</span></div></div>
-      <div class="card span-4"><div class="metric"><span class="muted">ï¿½Û¼ï¿½ï¿½ï¿½ï¿½Îµï¿½ï¿½ï¿½</span><strong>${stats.totalUpstreamCalls}</strong><span class="subtle">ï¿½ï¿½ï¿½Õ£ï¿½${stats.todayUpstreamCalls}</span></div></div>
+      <div class="card span-4"><div class="metric"><span class="muted">ÒÑÆôÓÃ Provider</span><strong>${Object.keys(providers).length}</strong><span class="subtle">Ä¬ÈÏÖµ£º${escapeHtml(defaultProvider || "Î´ÅäÖÃ")}</span></div></div>
+      <div class="card span-4"><div class="metric"><span class="muted">»îÔ¾ API Keys</span><strong>${stats.activeApiKeys}</strong><span class="subtle">Í¨¹ýºóÌ¨´´½¨Óë½ûÓÃ</span></div></div>
+      <div class="card span-4"><div class="metric"><span class="muted">ÀÛ¼ÆÉÏÓÎµ÷ÓÃ</span><strong>${stats.totalUpstreamCalls}</strong><span class="subtle">½ñÈÕ£º${stats.todayUpstreamCalls}</span></div></div>
       <div class="card span-8">
-        <h2>ï¿½ï¿½Ä¿Ëµï¿½ï¿½</h2>
-        <p>ï¿½ï¿½ï¿½ï¿½ï¿½æ±¾×¨ï¿½ï¿½Îª EdgeOne Pages ï¿½Ø¹ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î»ï¿½ï¿½ <code>edge-functions/[[default]].js</code>ï¿½ï¿½Ô­ï¿½ï¿½ï¿½ï¿½ Deno ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ü¹ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ò»ï¿½ï¿½ Edge Functionï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ò³ï¿½ï¿½ï¿½Äµï¿½Ò³ï¿½ï¿½ API ï¿½ï¿½ï¿½ï¿½Í¬Ò»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É¡ï¿½</p>
-        <p>ï¿½ï¿½Ç° EdgeOne ï¿½æ±¾ï¿½ï¿½ï¿½ï¿½ providerï¿½ï¿½</p>
-        <div>${providerTags || '<span class="tag">Î´ï¿½ï¿½ï¿½ï¿½</span>'}</div>
-        <p class="subtle"><code>linshiyouxiang</code> Ò²ï¿½ï¿½Ç¨ï¿½Æµï¿½ EdgeOne ï¿½æ£¬ï¿½ï¿½Ç°Êµï¿½ï¿½Ê¹ï¿½ï¿½ï¿½Ö·ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ Deno DOMï¿½ï¿½</p>
+        <h2>ÏîÄ¿ËµÃ÷</h2>
+        <p>Õâ¸ö°æ±¾×¨ÃÅÎª EdgeOne Pages ÖØ¹¹£¬Èë¿ÚÎ»ÓÚ <code>edge-functions/[[default]].js</code>¡£Ô­À´µÄ Deno ¶à·þÎñ¼Ü¹¹±»ÊÕÁ²³ÉÒ»¸ö Edge Function£¬¹ÜÀíÒ³¡¢ÎÄµµÒ³ºÍ API ¶¼ÔÚÍ¬Ò»¸öº¯ÊýÀïÍê³É¡£</p>
+        <p>µ±Ç° EdgeOne °æ±¾ÄÚÖÃ provider£º</p>
+        <div>${providerTags || '<span class="tag">Î´ÅäÖÃ</span>'}</div>
+        <p class="subtle"><code>linshiyouxiang</code> Ò²ÒÑÇ¨ÒÆµ½ EdgeOne °æ£¬µ±Ç°ÊµÏÖÊ¹ÓÃ×Ö·û´®½âÎöÌæ´ú Deno DOM¡£</p>
       </div>
       <div class="card span-4">
-        <h2>ï¿½ï¿½Ö¤</h2>
-        <p>ï¿½ï¿½ï¿½ï¿½ API ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Òª <code>Authorization: Bearer &lt;api-key&gt;</code>ï¿½ï¿½ï¿½Èµï¿½Â¼ï¿½ï¿½Ì¨ï¿½ï¿½ï¿½ï¿½ keyï¿½ï¿½ï¿½Ùµï¿½ï¿½Ã½Ó¿Ú¡ï¿½</p>
-        <p class="subtle">ï¿½ï¿½Ì¨ï¿½ï¿½Ö·ï¿½ï¿½<code>/admin/login</code></p>
+        <h2>ÈÏÖ¤</h2>
+        <p>ËùÓÐ API ÇëÇó¶¼ÐèÒª <code>Authorization: Bearer &lt;api-key&gt;</code>¡£ÏÈµÇÂ¼ºóÌ¨´´½¨ key£¬ÔÙµ÷ÓÃ½Ó¿Ú¡£</p>
+        <p class="subtle">ºóÌ¨µØÖ·£º<code>/admin/login</code></p>
       </div>
       <div class="card span-6">
-        <h2>ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½</h2>
+        <h2>Éú³ÉÓÊÏä</h2>
         <pre>curl -X POST "$BASE_URL/api/generate-email" \\
   -H "Authorization: Bearer $API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{"provider":"${escapeHtml(defaultProvider || "mailtm")}","prefix":"demo"}'</pre>
       </div>
       <div class="card span-6">
-        <h2>ï¿½ï¿½Ñ¯ï¿½Ê¼ï¿½ï¿½Ð±ï¿½</h2>
+        <h2>²éÑ¯ÓÊ¼þÁÐ±í</h2>
         <pre>curl "$BASE_URL/api/emails?email=demo@example.com" \\
   -H "Authorization: Bearer $API_KEY"</pre>
       </div>
       <div class="card span-6">
-        <h2>ï¿½ï¿½È¡ï¿½ï¿½ï¿½ï¿½ï¿½Ê¼ï¿½</h2>
+        <h2>¶ÁÈ¡µ¥·âÓÊ¼þ</h2>
         <pre>curl "$BASE_URL/api/email/&lt;mailId&gt;?email=demo@example.com" \\
   -H "Authorization: Bearer $API_KEY"</pre>
       </div>
       <div class="card span-6">
-        <h2>ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½</h2>
+        <h2>Çå¿ÕÓÊÏä</h2>
         <pre>curl -X DELETE "$BASE_URL/api/emails/clear?email=demo@example.com" \\
   -H "Authorization: Bearer $API_KEY"</pre>
       </div>
       <div class="card span-12">
-        <h2>ï¿½Ó¿Ú¸ï¿½ï¿½ï¿½</h2>
+        <h2>½Ó¿Ú¸ÅÀÀ</h2>
         <table>
-          <thead><tr><th>ï¿½ï¿½ï¿½ï¿½</th><th>Â·ï¿½ï¿½</th><th>Ëµï¿½ï¿½</th></tr></thead>
+          <thead><tr><th>·½·¨</th><th>Â·¾¶</th><th>ËµÃ÷</th></tr></thead>
           <tbody>
-            <tr><td>GET / POST</td><td>/api/generate-email</td><td>ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ï¿½ä£¬ï¿½É´ï¿½ provider / prefix / domain</td></tr>
-            <tr><td>GET</td><td>/api/emails</td><td>ï¿½ï¿½È¡ï¿½ï¿½ï¿½ï¿½ï¿½Ð±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ë´« email</td></tr>
-            <tr><td>GET</td><td>/api/email/:id</td><td>ï¿½ï¿½È¡ï¿½ï¿½ï¿½ï¿½ï¿½Ê¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½é´« email</td></tr>
-            <tr><td>DELETE</td><td>/api/email/:id</td><td>É¾ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê¼ï¿½</td></tr>
-            <tr><td>DELETE</td><td>/api/emails/clear</td><td>ï¿½ï¿½ï¿½Õµï¿½Ç°ï¿½ï¿½ï¿½ï¿½</td></tr>
-            <tr><td>GET</td><td>/api/stats</td><td>ï¿½ï¿½È¡ provider ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Í³ï¿½ï¿½</td></tr>
+            <tr><td>GET / POST</td><td>/api/generate-email</td><td>Éú³ÉÁÙÊ±ÓÊÏä£¬¿É´« provider / prefix / domain</td></tr>
+            <tr><td>GET</td><td>/api/emails</td><td>¶ÁÈ¡ÓÊÏäÁÐ±í£¬±ØÐë´« email</td></tr>
+            <tr><td>GET</td><td>/api/email/:id</td><td>¶ÁÈ¡µ¥·âÓÊ¼þ£¬½¨Òé´« email</td></tr>
+            <tr><td>DELETE</td><td>/api/email/:id</td><td>É¾³ýµ¥·âÓÊ¼þ</td></tr>
+            <tr><td>DELETE</td><td>/api/emails/clear</td><td>Çå¿Õµ±Ç°ÓÊÏä</td></tr>
+            <tr><td>GET</td><td>/api/stats</td><td>¶ÁÈ¡ provider Óëµ÷ÓÃÍ³¼Æ</td></tr>
           </tbody>
         </table>
       </div>
     </section>`;
   return renderLayout({
     title: "Temporary Mail API",
-    subtitle: "EdgeOne ï¿½ï¿½ï¿½ï¿½ï¿½Äµï¿½",
-    nav: '<a href="/docs">ï¿½Äµï¿½</a><a class="secondary" href="/admin/login">ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ì¨</a>',
-    body
+    subtitle: "EdgeOne ²¿ÊðÎÄµµ",
+    nav: '<a href="/docs">ÎÄµµ</a><a class="secondary" href="/admin/login">¹ÜÀíºóÌ¨</a>',
+    body,
   });
 }
+
 function renderLoginPage(errorMessage) {
   const flash = errorMessage ? `<div class="flash error">${escapeHtml(errorMessage)}</div>` : "";
   const body = `
     <section class="grid">
       <div class="card span-6">
-        <h2>ï¿½ï¿½Â¼ï¿½ï¿½Ì¨</h2>
-        <p>ï¿½ï¿½Ì¨ï¿½ï¿½ï¿½Ú´ï¿½ï¿½ï¿½ï¿½Í½ï¿½ï¿½ï¿½ API Keyï¿½ï¿½EdgeOne ï¿½æ±¾Ä¬ï¿½ï¿½Ö»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Äµï¿½ï¿½ï¿½Î¬ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½provider ï¿½ï¿½ï¿½ï¿½Í¨ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½É¡ï¿½</p>
+        <h2>µÇÂ¼ºóÌ¨</h2>
+        <p>ºóÌ¨ÓÃÓÚ´´½¨ºÍ½ûÓÃ API Key¡£EdgeOne °æ±¾Ä¬ÈÏÖ»±£Áô×îºËÐÄµÄÔËÎ¬ÄÜÁ¦£¬provider ÅäÖÃÍ¨¹ý»·¾³±äÁ¿Íê³É¡£</p>
         ${flash}
         <form method="post" action="/admin/login">
-          <label>ï¿½ï¿½ï¿½ï¿½Ô±ï¿½ï¿½ï¿½ï¿½
-            <input type="password" name="password" placeholder="ï¿½ï¿½ï¿½ï¿½ ADMIN_PASSWORD" required />
+          <label>¹ÜÀíÔ±ÃÜÂë
+            <input type="password" name="password" placeholder="ÊäÈë ADMIN_PASSWORD" required />
           </label>
-          <button type="submit">ï¿½ï¿½Â¼</button>
+          <button type="submit">µÇÂ¼</button>
         </form>
       </div>
       <div class="card span-6">
-        <h2>ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ê¾</h2>
-        <p>ï¿½ï¿½ EdgeOne Pages ï¿½ï¿½ï¿½ï¿½Ì¨ï¿½ï¿½ï¿½ï¿½ KV Storageï¿½ï¿½ï¿½ï¿½ï¿½Ñ±ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Îª <code>${KV_BINDING_NAME}</code>ï¿½ï¿½</p>
-        <p>È»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ <code>ADMIN_PASSWORD</code>ï¿½ï¿½<code>ADMIN_COOKIE_SECRET</code>ï¿½ï¿½<code>ENABLED_PROVIDERS</code>ï¿½ï¿½<code>DEFAULT_PROVIDER</code> ï¿½È»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½</p>
+        <h2>²¿ÊðÌáÊ¾</h2>
+        <p>ÔÚ EdgeOne Pages ¿ØÖÆÌ¨ÆôÓÃ KV Storage£¬²¢°Ñ±äÁ¿Ãû°ó¶¨Îª <code>${KV_BINDING_NAME}</code>¡£</p>
+        <p>È»ºóÉèÖÃ <code>ADMIN_PASSWORD</code>¡¢<code>ADMIN_COOKIE_SECRET</code>¡¢<code>ENABLED_PROVIDERS</code>¡¢<code>DEFAULT_PROVIDER</code> µÈ»·¾³±äÁ¿¡£</p>
       </div>
     </section>`;
   return renderLayout({
-    title: "ï¿½ï¿½Ì¨ï¿½ï¿½Â¼",
+    title: "ºóÌ¨µÇÂ¼",
     subtitle: "Admin Login",
-    nav: '<a href="/docs">ï¿½ï¿½ï¿½ï¿½ï¿½Äµï¿½</a>',
-    body
+    nav: '<a href="/docs">·µ»ØÎÄµµ</a>',
+    body,
   });
 }
+
 function renderAdminPage({ keys, createdKey, flash, providers, stats, defaultProvider }) {
   const flashHtml = flash ? `<div class="flash ${escapeHtml(flash.tone)}">${escapeHtml(flash.message)}</div>` : "";
-  const revealHtml = createdKey ? `<div class="flash success"><strong>ï¿½ï¿½ API Key</strong><div class="subtle">Ö»ï¿½ï¿½Ê¾ï¿½ï¿½Ò»ï¿½Î£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ï±ï¿½ï¿½æ¡£</div><pre>${escapeHtml(createdKey.rawKey)}</pre></div>` : "";
-  const rows = keys.length ? keys.map((record) => `
+  const revealHtml = createdKey
+    ? `<div class="flash success"><strong>ÐÂ API Key</strong><div class="subtle">Ö»ÏÔÊ¾ÕâÒ»´Î£¬ÇëÂíÉÏ±£´æ¡£</div><pre>${escapeHtml(createdKey.rawKey)}</pre></div>`
+    : "";
+  const rows = keys.length
+    ? keys.map((record) => `
       <tr>
         <td>${escapeHtml(record.id)}</td>
         <td>${escapeHtml(record.label)}</td>
@@ -1317,148 +1479,177 @@ function renderAdminPage({ keys, createdKey, flash, providers, stats, defaultPro
         <td>${escapeHtml(formatDateTime(record.createdAt))}</td>
         <td>
           <div class="row-actions">
-            <form method="post" action="/admin/keys/${encodeURIComponent(record.id)}/toggle"><button class="secondary" type="submit">${record.status === "active" ? "ï¿½ï¿½ï¿½ï¿½" : "ï¿½ï¿½ï¿½ï¿½"}</button></form>
-            <form method="post" action="/admin/keys/${encodeURIComponent(record.id)}/delete" onsubmit="return confirm('È·ï¿½ï¿½É¾ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ API Key ï¿½ï¿½ï¿½ï¿½');"><button type="submit">É¾ï¿½ï¿½</button></form>
+            <form method="post" action="/admin/keys/${encodeURIComponent(record.id)}/toggle"><button class="secondary" type="submit">${record.status === "active" ? "½ûÓÃ" : "ÆôÓÃ"}</button></form>
+            <form method="post" action="/admin/keys/${encodeURIComponent(record.id)}/delete" onsubmit="return confirm('È·ÈÏÉ¾³ýÕâ¸ö API Key Âð£¿');"><button type="submit">É¾³ý</button></form>
           </div>
         </td>
-      </tr>`).join("") : `<tr><td colspan="5" class="muted">ï¿½ï¿½Ã»ï¿½ï¿½ API Keyï¿½ï¿½</td></tr>`;
-  const providerTags = providers.map((provider) => `<span class="tag">${escapeHtml(provider.name)} ï¿½ï¿½ ${escapeHtml(provider.type)}</span>`).join("");
-  const providerRows = providers.length ? providers.map((provider) => `
+      </tr>`).join("")
+    : `<tr><td colspan="5" class="muted">»¹Ã»ÓÐ API Key¡£</td></tr>`;
+  const providerTags = providers.map((provider) => `<span class="tag">${escapeHtml(provider.name)} ¡¤ ${escapeHtml(provider.type)}</span>`).join("");
+  const providerRows = providers.length
+    ? providers.map((provider) => `
       <tr>
         <td>${escapeHtml(provider.name)}</td>
         <td>${escapeHtml(provider.type)}</td>
         <td>${escapeHtml(provider.target)}</td>
-        <td>${provider.isDefault ? "ï¿½ï¿½" : "ï¿½ï¿½"}</td>
+        <td>${provider.isDefault ? "ÊÇ" : "·ñ"}</td>
         <td>
           <div class="row-actions">
             <form method="post" action="/admin/providers/default">
               <input type="hidden" name="name" value="${escapeHtml(provider.name)}" />
-              <button class="secondary" type="submit">ï¿½ï¿½ÎªÄ¬ï¿½ï¿½</button>
+              <button class="secondary" type="submit">ÉèÎªÄ¬ÈÏ</button>
             </form>
             <form method="post" action="/admin/providers/${encodeURIComponent(provider.name)}/toggle">
-              <button class="secondary" type="submit">${provider.disabled ? "ï¿½ï¿½ï¿½ï¿½" : "ï¿½ï¿½ï¿½ï¿½"}</button>
+              <button class="secondary" type="submit">${provider.disabled ? "ÆôÓÃ" : "½ûÓÃ"}</button>
             </form>
             <form method="post" action="/admin/providers/test">
               <input type="hidden" name="name" value="${escapeHtml(provider.name)}" />
-              <button class="secondary" type="submit">ï¿½ï¿½ï¿½ï¿½</button>
+              <button class="secondary" type="submit">²âÊÔ</button>
             </form>
-            ${provider.type === "remote" ? `<form method="post" action="/admin/providers/${encodeURIComponent(provider.name)}/edit">
+            ${provider.type === "remote"
+              ? `<form method="post" action="/admin/providers/${encodeURIComponent(provider.name)}/edit">
                   <input type="hidden" name="name" value="${escapeHtml(provider.name)}" />
                   <input type="hidden" name="url" value="${escapeHtml(provider.target)}" />
-                  <button class="secondary" type="submit">ï¿½ï¿½ï¿½ï¿½</button>
+                  <button class="secondary" type="submit">¸üÐÂ</button>
                 </form>
-                <form method="post" action="/admin/providers/${encodeURIComponent(provider.name)}/delete" onsubmit="return confirm('È·ï¿½ï¿½É¾ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ Provider ï¿½ï¿½ï¿½ï¿½');"><button type="submit">É¾ï¿½ï¿½</button></form>` : ""}
+                <form method="post" action="/admin/providers/${encodeURIComponent(provider.name)}/delete" onsubmit="return confirm('È·ÈÏÉ¾³ýÕâ¸ö Provider Âð£¿');"><button type="submit">É¾³ý</button></form>`
+              : ""}
           </div>
         </td>
-      </tr>`).join("") : `<tr><td colspan="5" class="muted">ï¿½ï¿½Ã»ï¿½ï¿½ Providerï¿½ï¿½</td></tr>`;
+      </tr>`).join("")
+    : `<tr><td colspan="5" class="muted">»¹Ã»ÓÐ Provider¡£</td></tr>`;
   const body = `
     <section class="grid">
-      <div class="card span-4"><div class="metric"><span class="muted">ï¿½ï¿½Ô¾ API Keys</span><strong>${stats.activeApiKeys}</strong><span class="subtle">ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ï¿½ï¿½Ã»ï¿½É¾ï¿½ï¿½</span></div></div>
-      <div class="card span-4"><div class="metric"><span class="muted">Ä¬ï¿½ï¿½ Provider</span><strong>${escapeHtml(defaultProvider || "Î´ï¿½ï¿½ï¿½ï¿½")}</strong><span class="subtle">${providerTags || "Î´ï¿½ï¿½ï¿½ï¿½ provider"}</span></div></div>
-      <div class="card span-4"><div class="metric"><span class="muted">ï¿½Û¼ï¿½ï¿½ï¿½ï¿½Îµï¿½ï¿½ï¿½</span><strong>${stats.totalUpstreamCalls}</strong><span class="subtle">ï¿½ï¿½ï¿½Õ£ï¿½${stats.todayUpstreamCalls}</span></div></div>
+      <div class="card span-4"><div class="metric"><span class="muted">»îÔ¾ API Keys</span><strong>${stats.activeApiKeys}</strong><span class="subtle">¿ÉËæÊ±½ûÓÃ»òÉ¾³ý</span></div></div>
+      <div class="card span-4"><div class="metric"><span class="muted">Ä¬ÈÏ Provider</span><strong>${escapeHtml(defaultProvider || "Î´ÅäÖÃ")}</strong><span class="subtle">${providerTags || "Î´ÆôÓÃ provider"}</span></div></div>
+      <div class="card span-4"><div class="metric"><span class="muted">ÀÛ¼ÆÉÏÓÎµ÷ÓÃ</span><strong>${stats.totalUpstreamCalls}</strong><span class="subtle">½ñÈÕ£º${stats.todayUpstreamCalls}</span></div></div>
       <div class="card span-4">
-        <h2>ï¿½ï¿½ï¿½ï¿½ API Key</h2>
+        <h2>´´½¨ API Key</h2>
         ${flashHtml}
         ${revealHtml}
         <form method="post" action="/admin/keys">
-          <label>ï¿½ï¿½Ç©
-            <input type="text" name="label" placeholder="ï¿½ï¿½ï¿½ç£ºedgeone-smoke" required />
+          <label>±êÇ©
+            <input type="text" name="label" placeholder="ÀýÈç£ºedgeone-smoke" required />
           </label>
-          <button type="submit">ï¿½ï¿½ï¿½ï¿½</button>
+          <button type="submit">´´½¨</button>
         </form>
       </div>
       <div class="card span-8">
-        <h2>ï¿½ï¿½Ç° API Keys</h2>
+        <h2>µ±Ç° API Keys</h2>
         <table>
-          <thead><tr><th>ID</th><th>ï¿½ï¿½Ç©</th><th>×´Ì¬</th><th>ï¿½ï¿½ï¿½ï¿½Ê±ï¿½ï¿½</th><th>ï¿½ï¿½ï¿½ï¿½</th></tr></thead>
+          <thead><tr><th>ID</th><th>±êÇ©</th><th>×´Ì¬</th><th>´´½¨Ê±¼ä</th><th>²Ù×÷</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
       <div class="card span-12">
-        <h2>ï¿½ï¿½Ì¬ Provider</h2>
-        <p>ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ò»ï¿½ï¿½Ô¶ï¿½ï¿½ provider URLï¿½ï¿½ï¿½ï¿½Ö»ï¿½ï¿½ÒªÊµï¿½ï¿½ï¿½ï¿½Ô­ï¿½ï¿½Ä¿ provider ï¿½ï¿½Í¬ï¿½ï¿½Í³Ò»ï¿½Ó¿Ú¡ï¿½</p>
+        <h2>¶¯Ì¬ Provider</h2>
+        <p>ÕâÀï¿ÉÒÔÐÂÔöÒ»¸öÔ¶³Ì provider URL¡£ËüÖ»ÐèÒªÊµÏÖÓëÔ­ÏîÄ¿ provider ÏàÍ¬µÄÍ³Ò»½Ó¿Ú¡£</p>
         <form method="post" action="/admin/providers">
-          <label>Provider ï¿½ï¿½ï¿½ï¿½
-            <input type="text" name="name" placeholder="ï¿½ï¿½ï¿½ç£ºlegacy" required />
+          <label>Provider Ãû³Æ
+            <input type="text" name="name" placeholder="ÀýÈç£ºlegacy" required />
           </label>
           <label>Provider URL
             <input type="text" name="url" placeholder="https://example.com/provider" required />
           </label>
-          <button type="submit">ï¿½ï¿½ï¿½ï¿½Ô¶ï¿½ï¿½ Provider</button>
+          <button type="submit">ÐÂÔöÔ¶³Ì Provider</button>
         </form>
         <div style="height:16px"></div>
-        <h3>Ô¶ï¿½ï¿½ Provider ï¿½ï¿½È¨</h3>
+        <h3>Ô¶³Ì Provider ¼øÈ¨</h3>
         <form method="post" action="/admin/provider-secret">
           <label>PROVIDER_SECRET
-            <input type="text" name="value" placeholder="ï¿½ï¿½ï¿½Õ±ï¿½Ê¾É¾ï¿½ï¿½" />
+            <input type="text" name="value" placeholder="Áô¿Õ±íÊ¾É¾³ý" />
           </label>
           <div class="row-actions">
-            <button type="submit">ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ô¿</button>
-            <button class="secondary" type="submit" name="intent" value="delete">É¾ï¿½ï¿½ï¿½ï¿½Ô¿</button>
+            <button type="submit">±£´æÃÜÔ¿</button>
+            <button class="secondary" type="submit" name="intent" value="delete">É¾³ýÃÜÔ¿</button>
           </div>
         </form>
         <div style="height:16px"></div>
         <table>
-          <thead><tr><th>ï¿½ï¿½ï¿½ï¿½</th><th>ï¿½ï¿½ï¿½ï¿½</th><th>Ä¿ï¿½ï¿½</th><th>Ä¬ï¿½ï¿½</th><th>ï¿½ï¿½ï¿½ï¿½</th></tr></thead>
+          <thead><tr><th>Ãû³Æ</th><th>ÀàÐÍ</th><th>Ä¿±ê</th><th>Ä¬ÈÏ</th><th>²Ù×÷</th></tr></thead>
           <tbody>${providerRows}</tbody>
         </table>
       </div>
     </section>`;
   return renderLayout({
-    title: "ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ì¨",
+    title: "¹ÜÀíºóÌ¨",
     subtitle: "Admin Console",
-    nav: '<a href="/docs">ï¿½Äµï¿½</a><form method="post" action="/admin/logout" style="display:inline-flex"><button class="secondary" type="submit">ï¿½Ë³ï¿½ï¿½ï¿½Â¼</button></form>',
-    body
+    nav: '<a href="/docs">ÎÄµµ</a><form method="post" action="/admin/logout" style="display:inline-flex"><button class="secondary" type="submit">ÍË³öµÇÂ¼</button></form>',
+    body,
   });
 }
+
 function renderErrorPage(status, message) {
   return renderLayout({
-    title: "ï¿½ï¿½ï¿½ï¿½Ê§ï¿½ï¿½",
+    title: "ÇëÇóÊ§°Ü",
     subtitle: "Error",
-    nav: '<a href="/docs">ï¿½Øµï¿½ï¿½Äµï¿½</a>',
-    body: `<section class="grid"><div class="card span-12"><h2>${escapeHtml(String(status))}</h2><p>${escapeHtml(message)}</p></div></section>`
+    nav: '<a href="/docs">»Øµ½ÎÄµµ</a>',
+    body: `<section class="grid"><div class="card span-12"><h2>${escapeHtml(String(status))}</h2><p>${escapeHtml(message)}</p></div></section>`,
   });
 }
+
 function parseJsonBodyRequest(request) {
   const contentType = request.headers.get("content-type") ?? "";
   return contentType.includes("application/json");
 }
+
 async function handleApi(context, kv, state, url, providers) {
   await authenticateApiRequest(kv, context.request);
   const defaultProvider = await getDefaultProviderName(kv, context, providers);
   const providerSecret = (await resolveProviderSecret(kv, context)).value;
   const path = url.pathname;
+
   if ((context.request.method === "GET" || context.request.method === "POST") && path === "/api/generate-email") {
-    const payload = context.request.method === "POST" && parseJsonBodyRequest(context.request) ? await context.request.json().catch(() => ({})) : {
-      provider: url.searchParams.get("provider") || void 0,
-      prefix: url.searchParams.get("prefix") || void 0,
-      domain: url.searchParams.get("domain") || void 0
-    };
-    const providerName = typeof payload.provider === "string" && providers[payload.provider.toLowerCase()] ? payload.provider.toLowerCase() : defaultProvider;
+    const payload = context.request.method === "POST" && parseJsonBodyRequest(context.request)
+      ? await context.request.json().catch(() => ({}))
+      : {
+        provider: url.searchParams.get("provider") || undefined,
+        prefix: url.searchParams.get("prefix") || undefined,
+        domain: url.searchParams.get("domain") || undefined,
+      };
+    const providerName = typeof payload.provider === "string" && providers[payload.provider.toLowerCase()]
+      ? payload.provider.toLowerCase()
+      : defaultProvider;
     const provider = providers[providerName];
     if (!provider) throw new HttpError(400, `Unsupported provider: ${providerName}`);
-    const data = provider.kind === "remote" ? await remoteGenerateEmail(kv, state, provider, payload, providerSecret) : provider.name === "linshiyouxiang" ? await linshiGenerateEmail(kv, state, provider, payload) : await hydraGenerateEmail(kv, state, provider, payload);
+    const data = provider.kind === "remote"
+      ? await remoteGenerateEmail(kv, state, provider, payload, providerSecret)
+      : provider.name === "linshiyouxiang"
+      ? await linshiGenerateEmail(kv, state, provider, payload)
+      : await hydraGenerateEmail(kv, state, provider, payload);
     return jsonResponse(200, data);
   }
+
   if (context.request.method === "GET" && path === "/api/emails") {
     const email = url.searchParams.get("email");
     if (!email) throw new HttpError(400, "email is required.");
     const provider = await resolveProviderForMailbox(kv, providers, email, url.searchParams.get("provider"));
     if (!provider) throw new HttpError(404, "No provider session found for this email.");
-    const data = provider.kind === "remote" ? await remoteListEmails(kv, state, provider, email, providerSecret) : provider.name === "linshiyouxiang" ? await linshiListEmails(kv, state, provider, email) : await hydraListEmails(kv, state, provider, email);
+    const data = provider.kind === "remote"
+      ? await remoteListEmails(kv, state, provider, email, providerSecret)
+      : provider.name === "linshiyouxiang"
+      ? await linshiListEmails(kv, state, provider, email)
+      : await hydraListEmails(kv, state, provider, email);
     return jsonResponse(200, data);
   }
+
   if (context.request.method === "DELETE" && path === "/api/emails/clear") {
     const email = url.searchParams.get("email");
     if (!email) throw new HttpError(400, "email is required.");
     const provider = await resolveProviderForMailbox(kv, providers, email, url.searchParams.get("provider"));
     if (!provider) throw new HttpError(404, "No provider session found for this email.");
-    const data = provider.kind === "remote" ? await remoteClearEmails(kv, state, provider, email, providerSecret) : provider.name === "linshiyouxiang" ? await linshiClearEmails(kv, state, provider, email) : await hydraClearEmails(kv, state, provider, email);
+    const data = provider.kind === "remote"
+      ? await remoteClearEmails(kv, state, provider, email, providerSecret)
+      : provider.name === "linshiyouxiang"
+      ? await linshiClearEmails(kv, state, provider, email)
+      : await hydraClearEmails(kv, state, provider, email);
     return jsonResponse(200, data);
   }
+
   if (context.request.method === "GET" && path === "/api/stats") {
     return jsonResponse(200, await buildStats(kv, providers));
   }
+
   const mailMatch = path.match(/^\/api\/email\/([^/]+)$/);
   if (mailMatch && context.request.method === "GET") {
     const target = await resolveMailRouteTarget(
@@ -1466,9 +1657,13 @@ async function handleApi(context, kv, state, url, providers) {
       providers,
       decodeURIComponent(mailMatch[1]),
       url.searchParams.get("email"),
-      url.searchParams.get("provider")
+      url.searchParams.get("provider"),
     );
-    const data = target.provider.kind === "remote" ? await remoteGetEmail(kv, state, target.provider, target.email, decodeURIComponent(mailMatch[1]), providerSecret) : target.provider.name === "linshiyouxiang" ? await linshiGetEmail(kv, state, target.provider, target.email, decodeURIComponent(mailMatch[1])) : await hydraGetEmail(kv, state, target.provider, target.email, decodeURIComponent(mailMatch[1]));
+    const data = target.provider.kind === "remote"
+      ? await remoteGetEmail(kv, state, target.provider, target.email, decodeURIComponent(mailMatch[1]), providerSecret)
+      : target.provider.name === "linshiyouxiang"
+      ? await linshiGetEmail(kv, state, target.provider, target.email, decodeURIComponent(mailMatch[1]))
+      : await hydraGetEmail(kv, state, target.provider, target.email, decodeURIComponent(mailMatch[1]));
     return jsonResponse(200, data);
   }
   if (mailMatch && context.request.method === "DELETE") {
@@ -1477,13 +1672,19 @@ async function handleApi(context, kv, state, url, providers) {
       providers,
       decodeURIComponent(mailMatch[1]),
       url.searchParams.get("email"),
-      url.searchParams.get("provider")
+      url.searchParams.get("provider"),
     );
-    const data = target.provider.kind === "remote" ? await remoteDeleteEmail(kv, state, target.provider, target.email, decodeURIComponent(mailMatch[1]), providerSecret) : target.provider.name === "linshiyouxiang" ? await linshiDeleteEmail(kv, state, target.provider, target.email, decodeURIComponent(mailMatch[1])) : await hydraDeleteEmail(kv, state, target.provider, target.email, decodeURIComponent(mailMatch[1]));
+    const data = target.provider.kind === "remote"
+      ? await remoteDeleteEmail(kv, state, target.provider, target.email, decodeURIComponent(mailMatch[1]), providerSecret)
+      : target.provider.name === "linshiyouxiang"
+      ? await linshiDeleteEmail(kv, state, target.provider, target.email, decodeURIComponent(mailMatch[1]))
+      : await hydraDeleteEmail(kv, state, target.provider, target.email, decodeURIComponent(mailMatch[1]));
     return jsonResponse(200, data);
   }
+
   return jsonResponse(404, null, "API endpoint not found.");
 }
+
 async function handleAdmin(context, kv, url, providers) {
   const secureCookie = url.protocol === "https:";
   if (context.request.method === "GET" && url.pathname === "/admin/login") {
@@ -1495,10 +1696,10 @@ async function handleAdmin(context, kv, url, providers) {
     const form = await context.request.formData();
     const password = String(form.get("password") ?? "");
     if (password !== env(context, "ADMIN_PASSWORD")) {
-      return htmlResponse(403, renderLoginPage("ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½"));
+      return htmlResponse(403, renderLoginPage("ÃÜÂë´íÎó¡£"));
     }
     const token = await signAdminSession(env(context, "ADMIN_COOKIE_SECRET"), {
-      exp: Math.floor(Date.now() / 1e3) + SESSION_TTL_SEC
+      exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SEC,
     });
     return redirectResponse("/admin", 303, {
       "set-cookie": buildCookie("tmpmail_admin", token, {
@@ -1506,23 +1707,25 @@ async function handleAdmin(context, kv, url, providers) {
         httpOnly: true,
         sameSite: "Strict",
         secure: secureCookie,
-        maxAge: SESSION_TTL_SEC
+        maxAge: SESSION_TTL_SEC,
       }),
-      "cache-control": "no-store"
+      "cache-control": "no-store",
     });
   }
   if (context.request.method === "POST" && url.pathname === "/admin/logout") {
     requireSameOrigin(context.request, url);
     return redirectResponse("/admin/login", 303, {
       "set-cookie": clearCookie("tmpmail_admin", secureCookie),
-      "cache-control": "no-store"
+      "cache-control": "no-store",
     });
   }
+
   try {
     await requireAdmin(context, context.request);
   } catch {
     return redirectResponse("/admin/login", 303, { "cache-control": "no-store" });
   }
+
   if (context.request.method === "GET" && url.pathname === "/admin") {
     const providerEntries = await listProviderEntries(kv, context, providers);
     const stats = await buildStats(kv, providers);
@@ -1533,14 +1736,15 @@ async function handleAdmin(context, kv, url, providers) {
       flash: null,
       providers: providerEntries,
       stats,
-      defaultProvider: stats.defaultProvider
+      defaultProvider: stats.defaultProvider,
     }));
   }
+
   if (context.request.method === "POST" && url.pathname === "/admin/keys") {
     requireSameOrigin(context.request, url);
     const form = await context.request.formData();
     const label = String(form.get("label") ?? "").trim();
-    if (!label) throw new HttpError(400, "ï¿½ï¿½Ç©ï¿½ï¿½ï¿½ï¿½Îªï¿½Õ¡ï¿½");
+    if (!label) throw new HttpError(400, "±êÇ©²»ÄÜÎª¿Õ¡£");
     const created = await createApiKey(kv, label);
     const providerEntries = await listProviderEntries(kv, context, providers);
     const stats = await buildStats(kv, providers);
@@ -1548,28 +1752,30 @@ async function handleAdmin(context, kv, url, providers) {
     return htmlResponse(200, renderAdminPage({
       keys: await listApiKeys(kv),
       createdKey: { rawKey: created.rawKey },
-      flash: { tone: "success", message: "API Key ï¿½ï¿½ï¿½ï¿½ï¿½É¹ï¿½ï¿½ï¿½" },
+      flash: { tone: "success", message: "API Key ´´½¨³É¹¦¡£" },
       providers: providerEntries,
       stats,
-      defaultProvider: stats.defaultProvider
+      defaultProvider: stats.defaultProvider,
     }), { "cache-control": "no-store" });
   }
+
   if (context.request.method === "POST" && url.pathname === "/admin/providers") {
     requireSameOrigin(context.request, url);
     const form = await context.request.formData();
     const name = normalizeProviderName(String(form.get("name") ?? ""));
     const providerUrl = normalizeProviderUrl(String(form.get("url") ?? ""));
     if (providers[name] && providers[name].kind !== "remote") {
-      throw new HttpError(400, "ï¿½ï¿½ï¿½ï¿½ provider ï¿½ï¿½ï¿½Ü±ï¿½Ô¶ï¿½ï¿½ï¿½ï¿½ï¿½Ã¸ï¿½ï¿½Ç¡ï¿½");
+      throw new HttpError(400, "ÄÚÖÃ provider ²»ÄÜ±»Ô¶³ÌÅäÖÃ¸²¸Ç¡£");
     }
     await kvPutJson(kv, keyForProviderConfig(name), {
       name,
       url: providerUrl,
       createdAt: Date.now(),
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
     });
     return redirectResponse("/admin", 303, { "cache-control": "no-store" });
   }
+
   const editProviderMatch = url.pathname.match(/^\/admin\/providers\/([^/]+)\/edit$/);
   if (context.request.method === "POST" && editProviderMatch) {
     requireSameOrigin(context.request, url);
@@ -1580,11 +1786,11 @@ async function handleAdmin(context, kv, url, providers) {
     const providerEntries = await listProviderEntries(kv, context, providers);
     const current = providerEntries.find((provider) => provider.name === currentName);
     if (!current || current.type !== "remote") {
-      throw new HttpError(404, "Ö»ï¿½ï¿½ï¿½ï¿½ï¿½à¼­Ô¶ï¿½ï¿½ providerï¿½ï¿½");
+      throw new HttpError(404, "Ö»ÔÊÐí±à¼­Ô¶³Ì provider¡£");
     }
     if (currentName !== nextName) {
       const targetExists = providerEntries.find((provider) => provider.name === nextName);
-      if (targetExists) throw new HttpError(400, "Ä¿ï¿½ï¿½ provider ï¿½ï¿½ï¿½ï¿½ï¿½Ñ´ï¿½ï¿½Ú¡ï¿½");
+      if (targetExists) throw new HttpError(400, "Ä¿±ê provider Ãû³ÆÒÑ´æÔÚ¡£");
       const disabledConfig = await getResolvedConfigValue(kv, context, providerDisabledConfigKey(currentName), "");
       await kvDelete(kv, keyForProviderConfig(currentName));
       if (disabledConfig.source === "kv") {
@@ -1602,10 +1808,11 @@ async function handleAdmin(context, kv, url, providers) {
       name: nextName,
       url: nextUrl,
       createdAt: Date.now(),
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
     });
     return redirectResponse("/admin", 303, { "cache-control": "no-store" });
   }
+
   const deleteProviderMatch = url.pathname.match(/^\/admin\/providers\/([^/]+)\/delete$/);
   if (context.request.method === "POST" && deleteProviderMatch) {
     requireSameOrigin(context.request, url);
@@ -1613,7 +1820,7 @@ async function handleAdmin(context, kv, url, providers) {
     const allProviders = await assembleAllProviders(context, kv);
     const provider = allProviders[name];
     if (!provider || provider.kind !== "remote") {
-      throw new HttpError(404, "Ö»ï¿½ï¿½ï¿½ï¿½É¾ï¿½ï¿½Ô¶ï¿½ï¿½ providerï¿½ï¿½");
+      throw new HttpError(404, "Ö»ÔÊÐíÉ¾³ýÔ¶³Ì provider¡£");
     }
     await kvDelete(kv, keyForProviderConfig(name));
     await deleteConfigValue(kv, providerDisabledConfigKey(name));
@@ -1623,24 +1830,26 @@ async function handleAdmin(context, kv, url, providers) {
     }
     return redirectResponse("/admin", 303, { "cache-control": "no-store" });
   }
+
   if (context.request.method === "POST" && url.pathname === "/admin/providers/default") {
     requireSameOrigin(context.request, url);
     const form = await context.request.formData();
     const name = normalizeProviderName(String(form.get("name") ?? ""));
     const allProviders = await assembleAllProviders(context, kv);
-    if (!allProviders[name]) throw new HttpError(404, "Provider ï¿½ï¿½ï¿½ï¿½ï¿½Ú¡ï¿½");
-    if (allProviders[name].disabled) throw new HttpError(400, "ï¿½ï¿½ï¿½Ü½ï¿½ï¿½Ñ½ï¿½ï¿½Ãµï¿½ provider ï¿½ï¿½ÎªÄ¬ï¿½Ï¡ï¿½");
+    if (!allProviders[name]) throw new HttpError(404, "Provider ²»´æÔÚ¡£");
+    if (allProviders[name].disabled) throw new HttpError(400, "²»ÄÜ½«ÒÑ½ûÓÃµÄ provider ÉèÎªÄ¬ÈÏ¡£");
     await setConfigValue(kv, "DEFAULT_PROVIDER", name);
     return redirectResponse("/admin", 303, { "cache-control": "no-store" });
   }
+
   const toggleProviderMatch = url.pathname.match(/^\/admin\/providers\/([^/]+)\/toggle$/);
   if (context.request.method === "POST" && toggleProviderMatch) {
     requireSameOrigin(context.request, url);
     const name = decodeURIComponent(toggleProviderMatch[1]);
     const allProviders = await assembleAllProviders(context, kv);
     const provider = allProviders[name];
-    if (!provider) throw new HttpError(404, "Provider ï¿½ï¿½ï¿½ï¿½ï¿½Ú¡ï¿½");
-    if (provider.disableLocked) throw new HttpError(400, "ï¿½ï¿½ provider ï¿½Ä½ï¿½ï¿½ï¿½×´Ì¬ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½");
+    if (!provider) throw new HttpError(404, "Provider ²»´æÔÚ¡£");
+    if (provider.disableLocked) throw new HttpError(400, "¸Ã provider µÄ½ûÓÃ×´Ì¬±»»·¾³±äÁ¿Ëø¶¨¡£");
     const nextDisabled = !provider.disabled;
     if (nextDisabled) {
       const defaultProvider = await getDefaultProviderName(kv, context, allProviders);
@@ -1658,11 +1867,12 @@ async function handleAdmin(context, kv, url, providers) {
     }
     return redirectResponse("/admin", 303, { "cache-control": "no-store" });
   }
+
   if (context.request.method === "POST" && url.pathname === "/admin/provider-secret") {
     requireSameOrigin(context.request, url);
     const form = await context.request.formData();
     const resolved = await resolveProviderSecret(kv, context);
-    if (resolved.locked) throw new HttpError(400, "PROVIDER_SECRET ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½");
+    if (resolved.locked) throw new HttpError(400, "PROVIDER_SECRET ±»»·¾³±äÁ¿Ëø¶¨¡£");
     const intent = String(form.get("intent") ?? "save");
     if (intent === "delete") {
       await deleteConfigValue(kv, "PROVIDER_SECRET");
@@ -1671,13 +1881,14 @@ async function handleAdmin(context, kv, url, providers) {
     }
     return redirectResponse("/admin", 303, { "cache-control": "no-store" });
   }
+
   if (context.request.method === "POST" && url.pathname === "/admin/providers/test") {
     requireSameOrigin(context.request, url);
     const form = await context.request.formData();
     const name = normalizeProviderName(String(form.get("name") ?? ""));
     const allProviders = await assembleAllProviders(context, kv);
     const provider = allProviders[name];
-    if (!provider) throw new HttpError(404, "Provider ï¿½ï¿½ï¿½ï¿½ï¿½Ú¡ï¿½");
+    if (!provider) throw new HttpError(404, "Provider ²»´æÔÚ¡£");
     const testState = { upstreamCalls: 0 };
     const providerSecret = (await resolveProviderSecret(kv, context)).value;
     const result = await testProviderConnection(testState, provider, providerSecret);
@@ -1689,30 +1900,36 @@ async function handleAdmin(context, kv, url, providers) {
       createdKey: null,
       flash: {
         tone: result.ok ? "success" : "error",
-        message: result.ok ? `Provider ${name} ï¿½ï¿½ï¿½Ô³É¹ï¿½${result.email ? `ï¿½ï¿½ï¿½ï¿½ï¿½ä£º${result.email}` : ""}` : `Provider ${name} ï¿½ï¿½ï¿½ï¿½Ê§ï¿½Ü£ï¿½${result.error || result.status}`
+        message: result.ok
+          ? `Provider ${name} ²âÊÔ³É¹¦${result.email ? `£¬ÓÊÏä£º${result.email}` : ""}`
+          : `Provider ${name} ²âÊÔÊ§°Ü£º${result.error || result.status}`,
       },
       providers: providerEntries,
       stats,
-      defaultProvider: stats.defaultProvider
+      defaultProvider: stats.defaultProvider,
     }), { "cache-control": "no-store" });
   }
+
   const toggleMatch = url.pathname.match(/^\/admin\/keys\/([^/]+)\/toggle$/);
   if (context.request.method === "POST" && toggleMatch) {
     requireSameOrigin(context.request, url);
     const id = decodeURIComponent(toggleMatch[1]);
     const record = await kvGetJson(kv, keyForApiKey(id));
-    if (!record) throw new HttpError(404, "API Key ï¿½ï¿½ï¿½ï¿½ï¿½Ú¡ï¿½");
+    if (!record) throw new HttpError(404, "API Key ²»´æÔÚ¡£");
     await updateApiKeyStatus(kv, id, record.status === "active" ? "disabled" : "active");
     return redirectResponse("/admin", 303, { "cache-control": "no-store" });
   }
+
   const deleteMatch = url.pathname.match(/^\/admin\/keys\/([^/]+)\/delete$/);
   if (context.request.method === "POST" && deleteMatch) {
     requireSameOrigin(context.request, url);
     await deleteApiKey(kv, decodeURIComponent(deleteMatch[1]));
     return redirectResponse("/admin", 303, { "cache-control": "no-store" });
   }
-  return htmlResponse(404, renderErrorPage(404, "ï¿½ï¿½Ì¨Ò³ï¿½æ²»ï¿½ï¿½ï¿½Ú¡ï¿½"));
+
+  return htmlResponse(404, renderErrorPage(404, "ºóÌ¨Ò³Ãæ²»´æÔÚ¡£"));
 }
+
 async function handleRequest(context) {
   const kv = getKv();
   const url = new URL(context.request.url);
@@ -1720,7 +1937,7 @@ async function handleRequest(context) {
   const state = { upstreamCalls: 0 };
   let response;
   try {
-    if (!Object.keys(providers).length) throw new HttpError(500, "Ã»ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Îºï¿½ providerï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ ENABLED_PROVIDERSï¿½ï¿½");
+    if (!Object.keys(providers).length) throw new HttpError(500, "Ã»ÓÐÆôÓÃÈÎºÎ provider£¬Çë¼ì²é ENABLED_PROVIDERS¡£");
     if (context.request.method === "GET" && url.pathname === "/") {
       response = redirectResponse("/docs");
     } else if (context.request.method === "GET" && url.pathname === "/healthz") {
@@ -1734,18 +1951,22 @@ async function handleRequest(context) {
     } else if (url.pathname.startsWith("/api/")) {
       response = await handleApi(context, kv, state, url, providers);
     } else {
-      response = htmlResponse(404, renderErrorPage(404, `Î´Æ¥ï¿½äµ½Â·ï¿½É£ï¿½${url.pathname}`));
+      response = htmlResponse(404, renderErrorPage(404, `Î´Æ¥Åäµ½Â·ÓÉ£º${url.pathname}`));
     }
   } catch (error) {
     if (error instanceof HttpError) {
-      response = url.pathname.startsWith("/api/") ? jsonResponse(error.status, null, error.message) : htmlResponse(error.status, renderErrorPage(error.status, error.message));
+      response = url.pathname.startsWith("/api/")
+        ? jsonResponse(error.status, null, error.message)
+        : htmlResponse(error.status, renderErrorPage(error.status, error.message));
     } else {
       console.error(JSON.stringify({
         level: "error",
         route: `${context.request.method} ${url.pathname}`,
-        error: error instanceof Error ? error.stack : String(error)
+        error: error instanceof Error ? error.stack : String(error),
       }));
-      response = url.pathname.startsWith("/api/") ? jsonResponse(500, null, "Internal server error.") : htmlResponse(500, renderErrorPage(500, "ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î´Ô¤ï¿½Ú´ï¿½ï¿½ï¿½ï¿½ï¿½"));
+      response = url.pathname.startsWith("/api/")
+        ? jsonResponse(500, null, "Internal server error.")
+        : htmlResponse(500, renderErrorPage(500, "·þÎñ·¢ÉúÎ´Ô¤ÆÚ´íÎó¡£"));
     }
   }
   if (state.upstreamCalls > 0 && context.waitUntil) {
@@ -1755,9 +1976,7 @@ async function handleRequest(context) {
   }
   return response;
 }
-async function onRequest(context) {
+
+export async function onRequest(context) {
   return await handleRequest(context);
 }
-export {
-  onRequest
-};

@@ -1,6 +1,12 @@
 # EdgeOne 部署说明
 
-这个仓库已经新增了一个可直接部署到 EdgeOne Pages 的版本，入口文件是：
+这个仓库已经新增了一个可直接部署到 EdgeOne Pages 的版本。
+
+源码入口：
+
+- `edgeone-src/index.ts`
+
+构建产物入口：
 
 - `edge-functions/[[default]].js`
 
@@ -32,8 +38,18 @@
 新增目录：
 
 ```text
+edgeone-src/
+  index.ts
+
 edge-functions/
   [[default]].js
+```
+
+本地构建命令：
+
+```bash
+npm install
+npm run build:edgeone
 ```
 
 ## 部署前准备
